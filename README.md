@@ -2,6 +2,9 @@
 
 A full-stack URL shortener built with FastAPI, PostgreSQL, Redis, and React. Paste a long URL, get a short link. Click the short link, get redirected instantly.
 
+**Live Demo → [url-shortner-eta-khaki.vercel.app](https://url-shortner-eta-khaki.vercel.app)**
+**API Docs → [url-shortner-amlv.onrender.com/docs](https://url-shortner-amlv.onrender.com/docs)**
+
 ---
 
 ## What it does
@@ -167,6 +170,7 @@ What happens when a user submits a long URL.
 - **Migrations** — Alembic
 - **Frontend** — React + Vite
 - **Local infra** — Docker + docker-compose
+- **Deployed on** — Render (backend + database + cache) and Vercel (frontend)
 
 ---
 
@@ -174,25 +178,26 @@ What happens when a user submits a long URL.
 
 ```
 url-shortener/
-├── docker-compose.yml
+├── docker-compose.yml          — spins up PostgreSQL and Redis locally
 ├── backend/
-│   ├── main.py
-│   ├── requirements.txt
-│   ├── .env.example
+│   ├── main.py                 — FastAPI app entry point, CORS middleware, router registration
+│   ├── requirements.txt        — all Python dependencies with pinned versions
+│   ├── .python-version         — pins Python 3.11.9 for Render deployment
+│   ├── .env.example            — template for environment variables
 │   ├── alembic/
-│   │   └── versions/
+│   │   └── versions/           — database migration files
 │   └── app/
-│       ├── config.py
-│       ├── database.py
-│       ├── models.py
-│       ├── schemas.py
-│       ├── redis_client.py
+│       ├── config.py           — reads .env file, exposes a single settings object
+│       ├── database.py         — async engine, session factory, get_db dependency
+│       ├── models.py           — URL table definition using SQLAlchemy ORM
+│       ├── schemas.py          — Pydantic request and response shapes
+│       ├── redis_client.py     — get, set, delete cache helpers with graceful fallback
 │       └── routers/
-│           └── urls.py
+│           └── urls.py         — all API endpoints: shorten, redirect, stats
 └── frontend/
     └── src/
-        ├── App.jsx
-        └── index.css
+        ├── App.jsx             — entire React UI: state, fetch calls, conditional rendering
+        └── index.css           — styling
 ```
 
 ---
@@ -230,6 +235,32 @@ npm run dev
 Open `http://localhost:5173` and the app is ready.
 
 API docs are auto-generated at `http://localhost:8000/docs`.
+
+---
+
+## Deployment
+
+The project is deployed across two platforms.
+
+**Backend — Render**
+
+- Create a PostgreSQL database on Render and copy the internal connection URL
+- Create a Redis instance on Render and copy the internal Redis URL
+- Create a Web Service pointing to the `backend/` directory
+- Set build command: `pip install -r requirements.txt && alembic upgrade head`
+- Set start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+- Add all environment variables from `.env.example` using Render's production values
+
+**Frontend — Vercel**
+
+- Import the GitHub repo into Vercel
+- Set root directory to `frontend`, framework to Vite
+- Add one environment variable: `VITE_API_BASE = https://your-render-backend-url.onrender.com`
+- Deploy — Vercel handles everything else automatically
+
+**After both are deployed**
+
+Go back to Render and update `ALLOWED_ORIGINS` to include your Vercel URL. This tells the backend to accept requests from your frontend domain.
 
 ---
 
@@ -283,3 +314,39 @@ Copy `backend/.env.example` to `backend/.env` and fill in the values.
 | `DATABASE_URL` | PostgreSQL connection string | — |
 | `REDIS_URL` | Redis connection string | `redis://localhost:6379` |
 | `BASE_URL` | Base URL used when generating short links | `http://localhost:8000` |
+| `ALLOWED_ORIGINS` | Comma-separated list of frontend URLs allowed by CORS | `http://localhost:5173` |
+
+---
+
+## Design Decisions
+
+**Why Redis alongside PostgreSQL?**
+PostgreSQL is the source of truth — it stores everything permanently. Redis sits in front of it as a cache. For a URL shortener, the same short codes get hit repeatedly. Without Redis, every redirect would query the database. With Redis, the first visit fetches from PostgreSQL, stores the result in Redis, and every visit after that is served from memory in under a millisecond.
+
+**Why background tasks for click counting?**
+When someone clicks a short link, they should be redirected instantly. Incrementing a database counter is a write operation that adds latency. By using FastAPI's BackgroundTasks, the redirect happens immediately and the counter update runs after the response is already sent. The user never waits for it.
+
+**Why cache the URL on write, not just on first read?**
+When a new URL is created, it gets stored in Redis immediately — not just when it is first visited. This means the very first click is also served from cache. Without this, the first visitor always hits the database. It is a small optimisation that costs nothing.
+
+**Why check for existing long URLs before creating a new short code?**
+If someone shortens the same URL twice, they should get the same short code back. Creating two different short codes for the same destination would waste database rows and confuse users. The deduplication check keeps the system clean.
+
+---
+
+## Known Limitations
+
+- **Cold starts on Render free tier** — the backend spins down after 15 minutes of inactivity. The first request after a period of no traffic can take 30–60 seconds to respond. This is a free tier limitation, not a code issue.
+- **No user authentication** — anyone can create short links. There is no concept of ownership, so a user cannot see or manage links they created.
+- **No custom short codes** — codes are randomly generated. Users cannot choose their own vanity URLs like `/my-link`.
+- **No link expiry** — links live forever. There is no TTL on the database rows.
+
+---
+
+## Challenges
+
+The trickiest part of this project was making async SQLAlchemy work correctly in all the right places. FastAPI uses async functions throughout, and passing a database session created in one context into a background task — which runs after the response is already sent — silently fails. The session is closed by then. The fix was to give the background task its own independent session rather than inheriting one from the request. That kind of bug does not show up until you test with a real background task running after a real response.
+
+Getting Alembic to work with async SQLAlchemy also required a full rewrite of the generated `env.py`. The default Alembic setup is synchronous. Running it as-is against an async engine just hangs. Once you understand why — sync code cannot await async calls — the fix is straightforward, but the error message points nowhere useful.
+
+Deployment order also matters more than expected. The backend has to be live before the frontend is deployed, because the frontend needs the backend URL as a build-time environment variable. Getting CORS wrong in either direction — backend not allowing the frontend origin, or frontend calling the wrong URL — produces errors that look like network failures, not CORS failures. Reading the browser network tab carefully was the only way to diagnose it.
