@@ -1,62 +1,215 @@
 # URL Shortener
 
-A full-stack URL shortening service built with FastAPI, PostgreSQL, Redis, and React.
+A full-stack URL shortener built with FastAPI, PostgreSQL, Redis, and React. Paste a long URL, get a short link. Click the short link, get redirected instantly.
 
-## Features
+---
 
-- Shorten any long URL to a 6-character code
-- Instant redirects via Redis caching
-- Click count tracking per short link
-- Stats endpoint to view link performance
-- Graceful fallback to PostgreSQL if Redis is unavailable
+## What it does
+
+- Turns any long URL into a short 6-character code
+- Redirects users to the original URL when they visit the short link
+- Tracks how many times each link was clicked
+- Uses Redis to serve popular links without hitting the database every time
+
+---
+
+## Diagram 1 — System Architecture
+
+How all four pieces of the system sit together.
+
+```
+                    ┌──────────────────────┐
+                    │    React Frontend     │
+                    │    localhost:5173     │
+                    └──────────┬───────────┘
+                               │
+                        HTTP requests
+                               │
+                    ┌──────────▼───────────┐
+                    │    FastAPI Backend    │
+                    │    localhost:8000     │
+                    └────────┬─────┬───────┘
+                             │     │
+               ┌─────────────▼─┐ ┌─▼─────────────┐
+               │     Redis     │ │   PostgreSQL   │
+               │   port 6379   │ │   port 5432    │
+               │   (cache)     │ │  (database)    │
+               └───────────────┘ └───────────────┘
+```
+
+> Both Redis and PostgreSQL run as Docker containers locally.
+> FastAPI runs directly on your machine and talks to both containers through exposed ports.
+
+---
+
+## Diagram 2 — Redirect Flow (Cache-Aside Pattern)
+
+What happens every time someone clicks a short link.
+
+```
+  User visits  →  yoursite.com/abc123
+                          │
+                          ▼
+               ┌─────────────────────┐
+               │   Check Redis first  │
+               └──────────┬──────────┘
+                          │
+              ┌───────────┴────────────┐
+              │                        │
+         CACHE HIT                CACHE MISS
+         (fast path)              (slow path)
+              │                        │
+              │               ┌────────▼────────┐
+              │               │ Query PostgreSQL │
+              │               └────────┬────────┘
+              │                        │
+              │                  ┌─────┴──────┐
+              │                found       not found
+              │                  │               │
+              │        ┌─────────▼──────┐        │
+              │        │ Store in Redis  │      404
+              │        │  (cache warm)  │     error
+              │        └─────────┬──────┘
+              │                  │
+              └──────────┬───────┘
+                         │
+                         ▼
+              ┌───────────────────────┐
+              │  Redirect user to     │
+              │  original long URL    │
+              └───────────┬───────────┘
+                          │
+                          ▼
+              ┌───────────────────────┐
+              │  Increment click      │  ← runs in background
+              │  count in PostgreSQL  │    user doesn't wait
+              └───────────────────────┘
+```
+
+> First visit always hits PostgreSQL. Every visit after that is served from Redis.
+> Click counting runs as a background task — it does not slow down the redirect.
+
+---
+
+## Diagram 3 — URL Shortening Flow
+
+What happens when a user submits a long URL.
+
+```
+  User submits  →  https://very-long-url.com/some/path
+                              │
+                              ▼
+                  ┌───────────────────────┐
+                  │  Does this long URL    │
+                  │  already exist in DB?  │
+                  └───────────┬───────────┘
+                              │
+                 ┌────────────┴─────────────┐
+                 │                          │
+                YES                         NO
+                 │                          │
+                 │              ┌───────────▼───────────┐
+                 │              │  Generate random code  │
+                 │              │  e.g. "kX9mQz"        │
+                 │              │  (62 chars, 6 picks)   │
+                 │              └───────────┬───────────┘
+                 │                          │
+                 │              ┌───────────▼───────────┐
+                 │              │  Code already taken    │
+                 │              │  in database?          │
+                 │              └─────┬──────────┬───────┘
+                 │                   YES         NO
+                 │                   │            │
+                 │                   └── retry ◄──┘
+                 │                          │
+                 │              ┌───────────▼───────────┐
+                 │              │  Save to PostgreSQL    │
+                 │              │  Cache in Redis        │
+                 │              └───────────┬───────────┘
+                 │                          │
+                 └────────────┬─────────────┘
+                              │
+                              ▼
+                  Return →  http://localhost:8000/kX9mQz
+```
+
+> Same long URL always returns the same short code — no duplicates created.
+> 62 characters × 6 picks = 56 billion possible codes.
+
+---
+
+## Diagram 4 — Database Schema
+
+```
+  Table: urls
+  ┌─────────────┬──────────────┬──────────────────────────────────────┐
+  │   Column    │     Type     │              Notes                   │
+  ├─────────────┼──────────────┼──────────────────────────────────────┤
+  │ id          │ integer      │ primary key, auto increments 1, 2, 3 │
+  │ short_code  │ varchar(10)  │ unique + indexed — fast lookups      │
+  │ long_url    │ text         │ no length limit                      │
+  │ clicks      │ integer      │ starts at 0, increments on redirect  │
+  │ created_at  │ timestamp    │ auto set to UTC time on insert       │
+  └─────────────┴──────────────┴──────────────────────────────────────┘
+
+  Indexes
+  └── ix_urls_short_code  →  short_code column (unique)
+                              every redirect searches by this column
+```
+
+---
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Backend | FastAPI + Python |
-| Database | PostgreSQL |
-| Cache | Redis |
-| Frontend | React + Vite |
-| Local infrastructure | Docker + docker-compose |
+- **Backend** — FastAPI (Python)
+- **Database** — PostgreSQL with SQLAlchemy ORM
+- **Cache** — Redis
+- **Migrations** — Alembic
+- **Frontend** — React + Vite
+- **Local infra** — Docker + docker-compose
+
+---
 
 ## Project Structure
 
 ```
 url-shortener/
-├── docker-compose.yml        # PostgreSQL and Redis containers
+├── docker-compose.yml
 ├── backend/
-│   ├── main.py               # FastAPI app entry point
-│   ├── requirements.txt      # Python dependencies
-│   ├── .env.example          # Environment variable template
-│   ├── alembic/              # Database migrations
+│   ├── main.py
+│   ├── requirements.txt
+│   ├── .env.example
+│   ├── alembic/
+│   │   └── versions/
 │   └── app/
-│       ├── config.py         # Settings from .env
-│       ├── database.py       # Async PostgreSQL connection
-│       ├── models.py         # SQLAlchemy URL model
-│       ├── schemas.py        # Pydantic request/response schemas
-│       ├── redis_client.py   # Redis cache client
+│       ├── config.py
+│       ├── database.py
+│       ├── models.py
+│       ├── schemas.py
+│       ├── redis_client.py
 │       └── routers/
-│           └── urls.py       # URL endpoints
+│           └── urls.py
 └── frontend/
     └── src/
-        └── App.jsx           # React UI
+        ├── App.jsx
+        └── index.css
 ```
 
-## Setup and Run
+---
 
-### Prerequisites
-- Docker
-- Python 3.11+
-- Node.js 18+
+## Getting Started
 
-### 1. Start the databases
+You need Docker, Python 3.11+, and Node.js 18+ installed.
+
+**1. Clone the repo and start the databases**
 
 ```bash
+git clone https://github.com/shivam-tamboli/url-shortner.git
+cd url-shortner
 docker compose up -d
 ```
 
-### 2. Set up the backend
+**2. Set up the backend**
 
 ```bash
 cd backend
@@ -66,10 +219,7 @@ alembic upgrade head
 uvicorn main:app --reload
 ```
 
-Backend runs at `http://localhost:8000`
-API docs at `http://localhost:8000/docs`
-
-### 3. Start the frontend
+**3. Set up the frontend**
 
 ```bash
 cd frontend
@@ -77,22 +227,59 @@ npm install
 npm run dev
 ```
 
-Frontend runs at `http://localhost:5173`
+Open `http://localhost:5173` and the app is ready.
 
-## API Endpoints
+API docs are auto-generated at `http://localhost:8000/docs`.
+
+---
+
+## API Reference
 
 | Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/shorten` | Shorten a long URL |
-| GET | `/{short_code}` | Redirect to original URL |
-| GET | `/api/stats/{short_code}` | Get click stats for a short link |
-| GET | `/health` | Health check |
+|--------|----------|-------------|
+| `POST` | `/api/shorten` | Submit a long URL, get a short code back |
+| `GET` | `/{short_code}` | Redirect to the original URL |
+| `GET` | `/api/stats/{short_code}` | See click count for a link |
+| `GET` | `/health` | Check if the server is running |
 
-## How It Works
+**Shorten a URL**
 
-1. User submits a long URL
-2. Backend generates a random 6-character short code
-3. URL is saved to PostgreSQL and cached in Redis
-4. When the short link is visited, Redis is checked first (fast path)
-5. On Redis miss, PostgreSQL is queried and result is cached for next time
-6. Click count is incremented in the background after every redirect
+```bash
+curl -X POST http://localhost:8000/api/shorten \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://google.com"}'
+```
+
+```json
+{
+  "short_code": "kX9mQz",
+  "short_url": "http://localhost:8000/kX9mQz",
+  "long_url": "https://google.com"
+}
+```
+
+**Check stats**
+
+```bash
+curl http://localhost:8000/api/stats/kX9mQz
+```
+
+```json
+{
+  "short_code": "kX9mQz",
+  "long_url": "https://google.com",
+  "clicks": 14
+}
+```
+
+---
+
+## Environment Variables
+
+Copy `backend/.env.example` to `backend/.env` and fill in the values.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection string | — |
+| `REDIS_URL` | Redis connection string | `redis://localhost:6379` |
+| `BASE_URL` | Base URL used when generating short links | `http://localhost:8000` |
