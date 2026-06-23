@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     database_url: str
     redis_url: str
     base_url: str = "http://localhost:8000"
+    allowed_origins: str = "http://localhost:5173"
 
     model_config = SettingsConfigDict(env_file=".env")
 
