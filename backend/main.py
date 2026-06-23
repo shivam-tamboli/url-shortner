@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine
 from app.routers import urls
+from app.config import settings
 
 app = FastAPI(
     title="URL Shortener",
@@ -10,9 +11,11 @@ app = FastAPI(
     version="1.0.0",
 )
 
+origins = [origin.strip() for origin in settings.allowed_origins.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
