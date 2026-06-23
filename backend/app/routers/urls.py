@@ -10,10 +10,9 @@ from app.database import get_db, AsyncSessionLocal
 from app.models import URL
 from app.schemas import ShortenRequest, ShortenResponse, URLInfo
 from app.redis_client import get_cached_url, set_cached_url
+from app.config import settings
 
 router = APIRouter()
-
-BASE_URL = "http://localhost:8000"
 
 
 def generate_short_code(length: int = 6) -> str:
@@ -39,7 +38,7 @@ async def shorten_url(request: ShortenRequest, db: AsyncSession = Depends(get_db
     if existing:
         return ShortenResponse(
             short_code=existing.short_code,
-            short_url=f"{BASE_URL}/{existing.short_code}",
+            short_url=f"{settings.base_url}/{existing.short_code}",
             long_url=existing.long_url,
         )
 
@@ -58,7 +57,7 @@ async def shorten_url(request: ShortenRequest, db: AsyncSession = Depends(get_db
 
     return ShortenResponse(
         short_code=new_url.short_code,
-        short_url=f"{BASE_URL}/{new_url.short_code}",
+        short_url=f"{settings.base_url}/{new_url.short_code}",
         long_url=new_url.long_url,
     )
 
