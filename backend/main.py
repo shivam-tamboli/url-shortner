@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.database import engine, Base
+
 app = FastAPI(
     title="URL Shortener",
     description="A URL shortening service built with FastAPI",
@@ -14,6 +16,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup():
+    async with engine.begin() as conn:
+        pass
 
 
 @app.get("/health")
