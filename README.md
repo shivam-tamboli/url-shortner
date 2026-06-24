@@ -324,6 +324,14 @@ Go back to Render and update `ALLOWED_ORIGINS` to include your Vercel URL. This 
 | `GET` | `/api/stats/{short_code}` | See click count for a link |
 | `GET` | `/health` | Check if the server is running |
 
+**Request fields**
+
+| Field | Type | Required | Rules |
+|---|---|---|---|
+| `url` | string | yes | must be a valid URL |
+| `custom_code` | string | no | 1–10 chars, letters/numbers/hyphens/underscores only |
+| `expiry_hours` | integer | no | must be greater than 0, max 87600 (10 years) |
+
 **Shorten a URL (basic)**
 
 ```bash
