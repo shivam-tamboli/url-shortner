@@ -33,20 +33,26 @@ async def increment_click_count(short_code: str):
 async def shorten_url(request: ShortenRequest, db: AsyncSession = Depends(get_db)):
     long_url = str(request.url)
 
-    result = await db.execute(select(URL).where(URL.long_url == long_url))
-    existing = result.scalars().first()
-    if existing:
-        return ShortenResponse(
-            short_code=existing.short_code,
-            short_url=f"{settings.base_url}/{existing.short_code}",
-            long_url=existing.long_url,
-        )
+    if request.custom_code:
+        result = await db.execute(select(URL).where(URL.short_code == request.custom_code))
+        if result.scalars().first():
+            raise HTTPException(status_code=409, detail="This short code is already taken")
+        code = request.custom_code
+    else:
+        result = await db.execute(select(URL).where(URL.long_url == long_url))
+        existing = result.scalars().first()
+        if existing:
+            return ShortenResponse(
+                short_code=existing.short_code,
+                short_url=f"{settings.base_url}/{existing.short_code}",
+                long_url=existing.long_url,
+            )
 
-    while True:
-        code = generate_short_code()
-        result = await db.execute(select(URL).where(URL.short_code == code))
-        if not result.scalars().first():
-            break
+        while True:
+            code = generate_short_code()
+            result = await db.execute(select(URL).where(URL.short_code == code))
+            if not result.scalars().first():
+                break
 
     new_url = URL(short_code=code, long_url=long_url)
     db.add(new_url)
