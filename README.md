@@ -232,17 +232,22 @@ url-shortener/
 ├── docker-compose.yml          — spins up PostgreSQL and Redis locally
 ├── backend/
 │   ├── main.py                 — FastAPI app entry point, CORS middleware, router registration
-│   ├── requirements.txt        — all Python dependencies with pinned versions
+│   ├── requirements.txt        — production dependencies with pinned versions
+│   ├── requirements-dev.txt    — local-only dev dependencies (pytest, pytest-asyncio)
+│   ├── pytest.ini              — pytest configuration (asyncio mode)
 │   ├── .python-version         — pins Python 3.11.9 for Render deployment
 │   ├── .env.example            — template for environment variables
 │   ├── alembic/
 │   │   └── versions/           — database migration files
+│   ├── tests/
+│   │   ├── conftest.py         — shared fixtures (client, isolated DB per test)
+│   │   └── test_urls.py        — 12 tests covering all core behaviours
 │   └── app/
 │       ├── config.py           — reads .env file, exposes a single settings object
 │       ├── database.py         — async engine, session factory, get_db dependency
 │       ├── models.py           — URL table definition using SQLAlchemy ORM
-│       ├── schemas.py          — Pydantic request and response shapes
-│       ├── redis_client.py     — get, set, delete cache helpers with graceful fallback
+│       ├── schemas.py          — Pydantic request/response shapes with field validators
+│       ├── redis_client.py     — cache helpers, stores expiry in JSON value
 │       └── routers/
 │           └── urls.py         — all API endpoints: shorten, redirect, stats
 └── frontend/
@@ -286,6 +291,20 @@ npm run dev
 Open `http://localhost:5173` and the app is ready.
 
 API docs are auto-generated at `http://localhost:8000/docs`.
+
+---
+
+## Running Tests
+
+Tests require Docker to be running (they hit the real local database).
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+All 12 tests should pass. They cover shortening, redirecting, stats, custom codes, expiry, and all validation edge cases. Each test uses a UUID-based URL so they never conflict with each other or with real data.
 
 ---
 

@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import engine
 from app.routers import urls
 from app.config import settings
 
@@ -21,15 +20,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(urls.router)
-
-
-@app.on_event("startup")
-async def startup():
-    async with engine.begin() as conn:
-        pass
-
 
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+app.include_router(urls.router)
