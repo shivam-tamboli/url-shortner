@@ -62,42 +62,39 @@ What happens every time someone clicks a short link.
               ┌───────────┴────────────┐
               │                        │
          CACHE HIT                CACHE MISS
-         (fast path)              (slow path)
               │                        │
-              │               ┌────────▼────────┐
-              │               │ Query PostgreSQL │
-              │               └────────┬────────┘
-              │                        │
-              │                  ┌─────┴──────┐
-              │                found       not found
-              │                  │               │
-              │           ┌──────┴──────┐      404
-              │           │  Expired?   │     error
-              │           └──┬───────┬──┘
-              │             YES      NO
-              │              │       │
-              │            410   ┌───▼────────────┐
-              │           Gone   │ Store in Redis  │
-              │                  │  (cache warm)  │
-              │                  └───┬────────────┘
-              │                      │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌───────────────────────┐
-              │  Redirect user to     │
-              │  original long URL    │
-              └───────────┬───────────┘
-                          │
-                          ▼
-              ┌───────────────────────┐
-              │  Increment click      │  ← runs in background
-              │  count in PostgreSQL  │    user doesn't wait
-              └───────────────────────┘
+     ┌────────▼────────┐      ┌────────▼────────┐
+     │  Check expiry   │      │ Query PostgreSQL │
+     │  in cache value │      └────────┬────────┘
+     └──┬──────────┬───┘               │
+       YES         NO            ┌─────┴──────┐
+        │           │          found       not found
+       410      redirect          │               │
+      Gone                ┌──────┴──────┐       404
+                          │  Expired?   │      error
+                          └──┬───────┬──┘
+                            YES      NO
+                             │        │
+                           410   ┌────▼──────────────┐
+                          Gone   │  Store in Redis    │
+                                 │  (remaining TTL)   │
+                                 └────────┬───────────┘
+                                          │
+                                          ▼
+                               ┌───────────────────────┐
+                               │  Redirect user to     │
+                               │  original long URL    │
+                               └───────────┬───────────┘
+                                           │
+                                           ▼
+                               ┌───────────────────────┐
+                               │  Increment click      │  ← background task
+                               │  count in PostgreSQL  │
+                               └───────────────────────┘
 ```
 
-> First visit always hits PostgreSQL. Every visit after that is served from Redis.
-> Redis TTL matches the expiry time — expired links are evicted from cache automatically.
+> Expiry time is stored inside the cached value as a JSON field — no database query on cache hit.
+> On a cache miss, the remaining TTL (not the original duration) is used so Redis and PostgreSQL stay in sync.
 > Click counting runs as a background task — it does not slow down the redirect.
 
 ---
