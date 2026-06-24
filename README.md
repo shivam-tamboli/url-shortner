@@ -10,6 +10,8 @@ A full-stack URL shortener built with FastAPI, PostgreSQL, Redis, and React. Pas
 ## What it does
 
 - Turns any long URL into a short 6-character code
+- Lets users choose their own custom short code instead of a random one
+- Optionally sets an expiry time — the link stops working after that
 - Redirects users to the original URL when they visit the short link
 - Tracks how many times each link was clicked
 - Uses Redis to serve popular links without hitting the database every time
@@ -69,12 +71,17 @@ What happens every time someone clicks a short link.
               │                  ┌─────┴──────┐
               │                found       not found
               │                  │               │
-              │        ┌─────────▼──────┐        │
-              │        │ Store in Redis  │      404
-              │        │  (cache warm)  │     error
-              │        └─────────┬──────┘
-              │                  │
-              └──────────┬───────┘
+              │           ┌──────┴──────┐      404
+              │           │  Expired?   │     error
+              │           └──┬───────┬──┘
+              │             YES      NO
+              │              │       │
+              │            410   ┌───▼────────────┐
+              │           Gone   │ Store in Redis  │
+              │                  │  (cache warm)  │
+              │                  └───┬────────────┘
+              │                      │
+              └──────────┬───────────┘
                          │
                          ▼
               ┌───────────────────────┐
@@ -90,6 +97,7 @@ What happens every time someone clicks a short link.
 ```
 
 > First visit always hits PostgreSQL. Every visit after that is served from Redis.
+> Redis TTL matches the expiry time — expired links are evicted from cache automatically.
 > Click counting runs as a background task — it does not slow down the redirect.
 
 ---
@@ -103,41 +111,48 @@ What happens when a user submits a long URL.
                               │
                               ▼
                   ┌───────────────────────┐
-                  │  Does this long URL    │
-                  │  already exist in DB?  │
+                  │  Did user provide a    │
+                  │  custom_code?          │
                   └───────────┬───────────┘
                               │
                  ┌────────────┴─────────────┐
-                 │                          │
-                YES                         NO
-                 │                          │
-                 │              ┌───────────▼───────────┐
-                 │              │  Generate random code  │
-                 │              │  e.g. "kX9mQz"        │
-                 │              │  (62 chars, 6 picks)   │
-                 │              └───────────┬───────────┘
-                 │                          │
-                 │              ┌───────────▼───────────┐
-                 │              │  Code already taken    │
-                 │              │  in database?          │
-                 │              └─────┬──────────┬───────┘
-                 │                   YES         NO
-                 │                   │            │
-                 │                   └── retry ◄──┘
-                 │                          │
-                 │              ┌───────────▼───────────┐
-                 │              │  Save to PostgreSQL    │
-                 │              │  Cache in Redis        │
-                 │              └───────────┬───────────┘
-                 │                          │
-                 └────────────┬─────────────┘
-                              │
-                              ▼
-                  Return →  http://localhost:8000/kX9mQz
+                YES                          NO
+                 │                           │
+      ┌──────────▼──────────┐    ┌───────────▼───────────┐
+      │  Is that code taken  │    │  Does this long URL    │
+      │  in the database?   │    │  already exist in DB?  │
+      └──────┬──────────┬───┘    └───────────┬───────────┘
+            YES         NO                   │
+             │           │        ┌──────────┴──────────┐
+           409         use it    YES                     NO
+         Conflict               │              ┌────────▼────────────┐
+                                │              │  Generate random code│
+                                │              │  e.g. "kX9mQz"      │
+                                │              │  (62 chars, 6 picks) │
+                                │              └────────┬────────────┘
+                                │                       │
+                                │         ┌─────────────▼───────────┐
+                                │         │  Code already taken?     │
+                                │         └─────┬──────────┬─────────┘
+                                │              YES         NO
+                                │               │           │
+                                │               └─ retry ◄──┘
+                                │
+                                └──────────────────┐
+                                                   ▼
+                                    ┌──────────────────────────┐
+                                    │  Save to PostgreSQL       │
+                                    │  Set expires_at if given  │
+                                    │  Cache in Redis (TTL set) │
+                                    └──────────────┬───────────┘
+                                                   │
+                                                   ▼
+                                       Return short URL + expires_at
 ```
 
 > Same long URL always returns the same short code — no duplicates created.
 > 62 characters × 6 picks = 56 billion possible codes.
+> Custom codes skip the duplicate check and go straight to the taken/available check.
 
 ---
 
@@ -153,12 +168,51 @@ What happens when a user submits a long URL.
   │ long_url    │ text         │ no length limit                      │
   │ clicks      │ integer      │ starts at 0, increments on redirect  │
   │ created_at  │ timestamp    │ auto set to UTC time on insert       │
+  │ expires_at  │ timestamp    │ nullable — NULL means never expires  │
   └─────────────┴──────────────┴──────────────────────────────────────┘
 
   Indexes
   └── ix_urls_short_code  →  short_code column (unique)
                               every redirect searches by this column
 ```
+
+---
+
+## Diagram 5 — Link Expiry Flow
+
+What happens when a link has an expiry set.
+
+```
+  User creates link with expiry_hours = 2
+                   │
+                   ▼
+  expires_at = now + 2 hours  →  stored in PostgreSQL
+  Redis TTL  = 2 × 3600 secs  →  cache evicts it automatically
+                   │
+                   ▼
+         ┌─────────────────┐
+         │  2 hours later  │
+         └────────┬────────┘
+                  │
+        Someone clicks the short link
+                  │
+                  ▼
+         Check Redis → already evicted by TTL → cache miss
+                  │
+                  ▼
+         Query PostgreSQL → row found
+                  │
+                  ▼
+         Is expires_at in the past?
+                  │
+            YES ──┴── NO
+             │           │
+           410          redirect
+          Gone         as normal
+```
+
+> Redis TTL and PostgreSQL expires_at are always set to the same duration.
+> This means cache and database stay in sync without any extra cleanup job.
 
 ---
 
@@ -273,7 +327,7 @@ Go back to Render and update `ALLOWED_ORIGINS` to include your Vercel URL. This 
 | `GET` | `/api/stats/{short_code}` | See click count for a link |
 | `GET` | `/health` | Check if the server is running |
 
-**Shorten a URL**
+**Shorten a URL (basic)**
 
 ```bash
 curl -X POST http://localhost:8000/api/shorten \
@@ -285,7 +339,25 @@ curl -X POST http://localhost:8000/api/shorten \
 {
   "short_code": "kX9mQz",
   "short_url": "http://localhost:8000/kX9mQz",
-  "long_url": "https://google.com"
+  "long_url": "https://google.com",
+  "expires_at": null
+}
+```
+
+**Shorten a URL with custom code and expiry**
+
+```bash
+curl -X POST http://localhost:8000/api/shorten \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://google.com", "custom_code": "google", "expiry_hours": 24}'
+```
+
+```json
+{
+  "short_code": "google",
+  "short_url": "http://localhost:8000/google",
+  "long_url": "https://google.com",
+  "expires_at": "2026-06-25T10:00:00+00:00"
 }
 ```
 
@@ -299,7 +371,8 @@ curl http://localhost:8000/api/stats/kX9mQz
 {
   "short_code": "kX9mQz",
   "long_url": "https://google.com",
-  "clicks": 14
+  "clicks": 14,
+  "expires_at": null
 }
 ```
 
@@ -332,14 +405,19 @@ When a new URL is created, it gets stored in Redis immediately — not just when
 **Why check for existing long URLs before creating a new short code?**
 If someone shortens the same URL twice, they should get the same short code back. Creating two different short codes for the same destination would waste database rows and confuse users. The deduplication check keeps the system clean.
 
+**Why return 409 for a taken custom code instead of auto-generating a fallback?**
+When a user explicitly picks a custom code, they have a reason for that exact name. Silently giving them a random code instead would be confusing — they would not know their choice was rejected. A 409 Conflict is honest and lets them pick a different name.
+
+**Why set Redis TTL to match expires_at instead of running a cleanup job?**
+The simplest correct solution. If the Redis TTL matches the expiry duration exactly, the cache entry disappears automatically when the link expires — no extra work needed. A separate cleanup job would be another moving part that can fail. Redis handles it for free.
+
 ---
 
 ## Known Limitations
 
 - **Cold starts on Render free tier** — the backend spins down after 15 minutes of inactivity. The first request after a period of no traffic can take 30–60 seconds to respond. This is a free tier limitation, not a code issue.
 - **No user authentication** — anyone can create short links. There is no concept of ownership, so a user cannot see or manage links they created.
-- **No custom short codes** — codes are randomly generated. Users cannot choose their own vanity URLs like `/my-link`.
-- **No link expiry** — links live forever. There is no TTL on the database rows.
+- **Expired rows stay in PostgreSQL** — when a link expires, the row is not deleted. The redirect just returns 410. A background cleanup job could remove expired rows over time, but that is not implemented.
 
 ---
 
