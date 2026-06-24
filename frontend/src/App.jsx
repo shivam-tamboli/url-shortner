@@ -4,8 +4,11 @@ const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000"
 
 function App() {
   const [inputUrl, setInputUrl] = useState("")
+  const [customCode, setCustomCode] = useState("")
+  const [expiryHours, setExpiryHours] = useState("")
   const [shortUrl, setShortUrl] = useState("")
   const [shortCode, setShortCode] = useState("")
+  const [expiresAt, setExpiresAt] = useState(null)
   const [clicks, setClicks] = useState(null)
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
@@ -15,13 +18,18 @@ function App() {
     setError("")
     setShortUrl("")
     setClicks(null)
+    setExpiresAt(null)
     setLoading(true)
+
+    const body = { url: inputUrl }
+    if (customCode.trim()) body.custom_code = customCode.trim()
+    if (expiryHours) body.expiry_hours = parseInt(expiryHours, 10)
 
     try {
       const response = await fetch(`${API_BASE}/api/shorten`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: inputUrl }),
+        body: JSON.stringify(body),
       })
 
       if (!response.ok) {
@@ -33,6 +41,7 @@ function App() {
       const data = await response.json()
       setShortUrl(data.short_url)
       setShortCode(data.short_code)
+      setExpiresAt(data.expires_at)
     } catch {
       setError("Could not connect to server. Is FastAPI running?")
     } finally {
@@ -65,6 +74,13 @@ function App() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  function formatExpiry(isoString) {
+    return new Date(isoString).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    })
+  }
+
   return (
     <div className="card">
       <h1>URL Shortener</h1>
@@ -77,6 +93,34 @@ function App() {
         onChange={(e) => setInputUrl(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && handleShorten()}
       />
+
+      <div className="optional-fields">
+        <div className="input-group">
+          <label className="input-label">
+            Custom code <span className="optional-tag">optional</span>
+          </label>
+          <input
+            type="text"
+            placeholder="e.g. my-link"
+            value={customCode}
+            onChange={(e) => setCustomCode(e.target.value)}
+            maxLength={10}
+          />
+        </div>
+
+        <div className="input-group">
+          <label className="input-label">
+            Expires in hours <span className="optional-tag">optional</span>
+          </label>
+          <input
+            type="number"
+            placeholder="e.g. 24"
+            value={expiryHours}
+            onChange={(e) => setExpiryHours(e.target.value)}
+            min={1}
+          />
+        </div>
+      </div>
 
       <button
         className="btn"
@@ -97,6 +141,11 @@ function App() {
                 {shortUrl}
               </a>
             </div>
+            {expiresAt && (
+              <div className="result-expiry">
+                Expires {formatExpiry(expiresAt)}
+              </div>
+            )}
             <button className="btn copy-btn" onClick={handleCopy}>
               {copied ? "Copied!" : "Copy"}
             </button>
