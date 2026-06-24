@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.database import get_db, AsyncSessionLocal
 from app.models import URL
 from app.schemas import ShortenRequest, ShortenResponse, URLInfo
-from app.redis_client import get_cached_url, set_cached_url
+from app.redis_client import get_cached_url, set_cached_url, delete_cached_url
 from app.config import settings
 
 router = APIRouter()
@@ -64,8 +64,8 @@ async def shorten_url(request: ShortenRequest, db: AsyncSession = Depends(get_db
     await db.commit()
     await db.refresh(new_url)
 
-    if request.expiry_hours:
-        await set_cached_url(new_url.short_code, new_url.long_url, ttl=int(request.expiry_hours * 3600))
+    if expires_at:
+        await set_cached_url(new_url.short_code, new_url.long_url, ttl=int(request.expiry_hours * 3600), expires_at=expires_at)
     else:
         await set_cached_url(new_url.short_code, new_url.long_url)
 
@@ -99,8 +99,11 @@ async def redirect_url(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    cached_url = await get_cached_url(short_code)
+    cached_url, cached_expires_at = await get_cached_url(short_code)
     if cached_url:
+        if cached_expires_at and datetime.now(timezone.utc) > cached_expires_at:
+            await delete_cached_url(short_code)
+            raise HTTPException(status_code=410, detail="This link has expired")
         background_tasks.add_task(increment_click_count, short_code)
         return RedirectResponse(url=cached_url, status_code=307)
 
@@ -113,7 +116,11 @@ async def redirect_url(
     if url.expires_at and datetime.now(timezone.utc) > url.expires_at:
         raise HTTPException(status_code=410, detail="This link has expired")
 
-    await set_cached_url(short_code, url.long_url)
-    background_tasks.add_task(increment_click_count, short_code)
+    if url.expires_at:
+        remaining_ttl = int((url.expires_at - datetime.now(timezone.utc)).total_seconds())
+        await set_cached_url(short_code, url.long_url, ttl=remaining_ttl, expires_at=url.expires_at)
+    else:
+        await set_cached_url(short_code, url.long_url)
 
+    background_tasks.add_task(increment_click_count, short_code)
     return RedirectResponse(url=url.long_url, status_code=307)
