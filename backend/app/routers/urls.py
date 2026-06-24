@@ -1,5 +1,6 @@
 import random
 import string
+from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import RedirectResponse
@@ -54,17 +55,25 @@ async def shorten_url(request: ShortenRequest, db: AsyncSession = Depends(get_db
             if not result.scalars().first():
                 break
 
-    new_url = URL(short_code=code, long_url=long_url)
+    expires_at = None
+    if request.expiry_hours:
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=request.expiry_hours)
+
+    new_url = URL(short_code=code, long_url=long_url, expires_at=expires_at)
     db.add(new_url)
     await db.commit()
     await db.refresh(new_url)
 
-    await set_cached_url(new_url.short_code, new_url.long_url)
+    if request.expiry_hours:
+        await set_cached_url(new_url.short_code, new_url.long_url, ttl=int(request.expiry_hours * 3600))
+    else:
+        await set_cached_url(new_url.short_code, new_url.long_url)
 
     return ShortenResponse(
         short_code=new_url.short_code,
         short_url=f"{settings.base_url}/{new_url.short_code}",
         long_url=new_url.long_url,
+        expires_at=new_url.expires_at,
     )
 
 
@@ -80,6 +89,7 @@ async def get_stats(short_code: str, db: AsyncSession = Depends(get_db)):
         short_code=url.short_code,
         long_url=url.long_url,
         clicks=url.clicks,
+        expires_at=url.expires_at,
     )
 
 
@@ -99,6 +109,9 @@ async def redirect_url(
 
     if not url:
         raise HTTPException(status_code=404, detail="Short URL not found")
+
+    if url.expires_at and datetime.now(timezone.utc) > url.expires_at:
+        raise HTTPException(status_code=410, detail="This link has expired")
 
     await set_cached_url(short_code, url.long_url)
     background_tasks.add_task(increment_click_count, short_code)

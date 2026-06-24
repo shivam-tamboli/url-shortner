@@ -13,9 +13,9 @@ async def get_cached_url(short_code: str) -> str | None:
         return None
 
 
-async def set_cached_url(short_code: str, long_url: str) -> None:
+async def set_cached_url(short_code: str, long_url: str, ttl: int = CACHE_TTL) -> None:
     try:
-        await redis_client.set(short_code, long_url, ex=CACHE_TTL)
+        await redis_client.set(short_code, long_url, ex=ttl)
     except Exception:
         pass
 
